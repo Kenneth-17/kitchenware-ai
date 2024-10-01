@@ -1,0 +1,15 @@
+version: '3'
+
+services:
+  food_analyzer:
+    build: .
+    volumes:
+      - ~/.aws:/root/.aws:ro  # Mount AWS credentials from host
+      - ./aws_config:/root/.aws:ro  # Mount our custom AWS config if needed
+    devices:
+      - /dev/video0:/dev/video0  # For PC webcam
+      - /dev/vchiq:/dev/vchiq    # For Raspberry Pi camera
+    environment:
+      - AWS_ACCESS_KEY_ID=AKIAVY2PG2WSM6DGORVH
+      - AWS_SECRET_ACCESS_KEY=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
+      - AWS_DEFAULT_REGION=us-east-1
