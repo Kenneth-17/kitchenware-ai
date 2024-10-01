@@ -1,14 +1,20 @@
 # Use a base image that works on both PC and Raspberry Pi
 FROM python:3.9-slim
 
-# Install system dependencies
+# Install build tools and dependencies
 RUN apt-get update && apt-get install -y \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
-    libgl1-mesa-glx \
+    git \
+    cmake \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
+
+# Clone and build Raspberry Pi userland libraries
+RUN git clone https://github.com/raspberrypi/userland.git /opt/userland && \
+    cd /opt/userland && \
+    ./buildme && \
+    cp build/*/*.so /usr/local/lib/ && \
+    cp build/*/*.so.* /usr/local/lib/ && \
+    ldconfig
 
 # Install Python packages
 COPY requirements.txt .

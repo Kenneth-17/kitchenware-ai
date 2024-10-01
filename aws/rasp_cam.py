@@ -1,4 +1,4 @@
-import picamera
+from picamera2 import Picamera2
 import boto3
 import os
 from datetime import datetime
@@ -17,19 +17,27 @@ class CameraS3Uploader:
         self.bucket_name = bucket_name
         self.aws_region = aws_region
         self.s3_client = boto3.client('s3', region_name=self.aws_region)
+        self.picam2 = Picamera2()
 
     def capture_image(self):
-        """Capture image from Raspberry Pi camera"""
+        """Capture image from Raspberry Pi camera v3"""
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             local_filename = f"image_{timestamp}.jpg"
 
-            with picamera.PiCamera() as camera:
-                # Camera warm-up time
-                camera.start_preview()
-                time.sleep(2)  # Wait for the camera to warm up
-                camera.capture(local_filename)
-                camera.stop_preview()
+            # Configure and start the camera
+            config = self.picam2.create_still_configuration()
+            self.picam2.configure(config)
+            self.picam2.start()
+            
+            # Wait for auto exposure and auto white balance to settle
+            time.sleep(2)
+            
+            # Capture the image
+            self.picam2.capture_file(local_filename)
+            
+            # Stop the camera
+            self.picam2.stop()
 
             logger.info(f"Image captured and saved as {local_filename}")
             return local_filename
@@ -44,10 +52,11 @@ class CameraS3Uploader:
             object_key = f"images/{datetime.now().strftime('%Y/%m/%d')}/{local_filename}"
             
             with open(local_filename, 'rb') as file:
-                self.s3_client.put_object(
-                    Bucket=self.bucket_name,
-                    Key=object_key,
-                    Body=file
+                self.s3_client.upload_fileobj(
+                    file,
+                    self.bucket_name,
+                    object_key,
+                    ExtraArgs={'ContentType': 'image/jpeg'}
                 )
             logger.info(f"Image uploaded to S3: {object_key}")
             return object_key
@@ -75,104 +84,118 @@ class CameraS3Uploader:
     def cleanup(self, local_filename):
         """Remove local image file"""
         try:
-            os.remove(local_filename)
-            logger.info(f"Local file removed: {local_filename}")
+            if os.path.exists(local_filename):
+                os.remove(local_filename)
+                logger.info(f"Local file removed: {local_filename}")
         except Exception as e:
             logger.error(f"Error removing local file: {str(e)}")
 
+class NutritionAnalyzer:
+    def __init__(self, openai_api_key, nutritionix_app_id, nutritionix_api_key):
+        self.openai_client = OpenAI(api_key=openai_api_key)
+        self.nutritionix_app_id = nutritionix_app_id
+        self.nutritionix_api_key = nutritionix_api_key
+        self.nutritionix_api_url = "https://trackapi.nutritionix.com/v2/natural/nutrients"
+
+    def analyze_image(self, img_url):
+        """Analyze image using OpenAI API"""
+        try:
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4-vision-preview",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "What's in this image? Please provide just the food name."},
+                            {"type": "image_url", "image_url": {"url": img_url}}
+                        ]
+                    }
+                ],
+                max_tokens=300
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"Error analyzing image with OpenAI: {str(e)}")
+            raise
+
+    def get_nutrition_info(self, food_name, serving_grams):
+        """Get nutrition information from Nutritionix API"""
+        try:
+            headers = {
+                "x-app-id": self.nutritionix_app_id,
+                "x-app-key": self.nutritionix_api_key,
+                "Content-Type": "application/json"
+            }
+            
+            data = {
+                "query": f"{serving_grams} grams of {food_name}",
+                "timezone": "US/Eastern"
+            }
+            
+            response = requests.post(self.nutritionix_api_url, headers=headers, json=data)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error getting nutrition info: {str(e)}")
+            raise
+
 def main():
     # Configuration
-    BUCKET_NAME = "kitchencounter"
-    AWS_REGION = "us-east-1"
+    CONFIG = {
+        'BUCKET_NAME': "kitchencounter",
+        'AWS_REGION': "us-east-1",
+        'OPENAI_API_KEY': 'your-openai-api-key',
+        'NUTRITIONIX_APP_ID': "94615eef",
+        'NUTRITIONIX_API_KEY': "5e7a357053959ca39c053ba924460cc9"
+    }
 
     try:
-        uploader = CameraS3Uploader(BUCKET_NAME, AWS_REGION)
+        uploader = CameraS3Uploader(CONFIG['BUCKET_NAME'], CONFIG['AWS_REGION'])
+        analyzer = NutritionAnalyzer(
+            CONFIG['OPENAI_API_KEY'],
+            CONFIG['NUTRITIONIX_APP_ID'],
+            CONFIG['NUTRITIONIX_API_KEY']
+        )
         
         # Test S3 permissions
         try:
-            uploader.s3_client.head_bucket(Bucket=BUCKET_NAME)
-            logger.info(f"Successfully connected to bucket: {BUCKET_NAME}")
+            uploader.s3_client.head_bucket(Bucket=CONFIG['BUCKET_NAME'])
+            logger.info(f"Successfully connected to bucket: {CONFIG['BUCKET_NAME']}")
         except ClientError as e:
             error_code = e.response['Error']['Code']
-            if error_code == '403':
-                logger.error(f"Permission denied to access bucket: {BUCKET_NAME}")
-            elif error_code == '404':
-                logger.error(f"Bucket not found: {BUCKET_NAME}")
+            logger.error(f"S3 bucket error: {error_code}")
             raise
 
+        # Capture and upload image
         local_filename = uploader.capture_image()
         object_key = uploader.upload_to_s3(local_filename)
         img_url = uploader.generate_url(object_key)
         
-        # Your existing OpenAI and Nutritionix code starts here
-        client = OpenAI(api_key='sk-Qx1xcQJlq6ZcIeJisyyzfuhSB8WFAkWt77PDjm9IbTT3BlbkFJbWQvNZHUP9VvA9Z1TAxo-R2b2gdUP1Jgwr8SKn5joA')
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "What's in this image, just the food name?"},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": img_url,
-                            },
-                        },
-                    ],
-                }
-            ],
-            max_tokens=300,
-        )
-
-        API_URL = "https://trackapi.nutritionix.com/v2/natural/nutrients"
-        APP_ID = "94615eef"
-        API_KEY = "5e7a357053959ca39c053ba924460cc9"
-
-        food_name = response.choices[0].message.content
-
+        # Analyze image and get food name
+        food_name = analyzer.analyze_image(img_url)
+        print(f"Detected food: {food_name}")
+        
+        # Get serving size from user
         serving_grams = input("Enter the serving size in grams: ")
-
-        query = f"{serving_grams} grams of {food_name}"
-
-        headers = {
-            "x-app-id": APP_ID,
-            "x-app-key": API_KEY,
-            "Content-Type": "application/json"
-        }
-
-        data = {
-            "query": query,
-            "timezone": "US/Eastern"
-        }
-
-        response = requests.post(API_URL, headers=headers, json=data)
-
-        if response.status_code == 200:
-            result = response.json()
-            for food in result['foods']:
-                print(f"Food Name: {food['food_name']}")
-                print(f"Serving Weight: {food['serving_weight_grams']} grams")
-                print(f"Calories: {food['nf_calories']} kcal")
-                print(f"Total Fat: {food['nf_total_fat']} g")
-                print(f"Carbohydrates: {food['nf_total_carbohydrate']} g")
-                print(f"Protein: {food['nf_protein']} g")
-                print("-" * 30)
-        else:
-            print(f"Error: {response.status_code}")
-            print(response.text)
-
-        uploader.cleanup(local_filename)
-
+        
+        # Get nutrition information
+        nutrition_data = analyzer.get_nutrition_info(food_name, serving_grams)
+        
+        # Display results
+        for food in nutrition_data['foods']:
+            print(f"\nNutrition Information:")
+            print(f"Food Name: {food['food_name']}")
+            print(f"Serving Weight: {food['serving_weight_grams']} grams")
+            print(f"Calories: {food['nf_calories']:.1f} kcal")
+            print(f"Total Fat: {food['nf_total_fat']:.1f} g")
+            print(f"Carbohydrates: {food['nf_total_carbohydrate']:.1f} g")
+            print(f"Protein: {food['nf_protein']:.1f} g")
+        
     except Exception as e:
         logger.error(f"An error occurred: {str(e)}")
-        if 'local_filename' in locals():
-            try:
-                os.remove(local_filename)
-                logger.info(f"Cleaned up local file after error: {local_filename}")
-            except:
-                pass
+    finally:
+        if 'local_filename' in locals() and 'uploader' in locals():
+            uploader.cleanup(local_filename)
 
 if __name__ == "__main__":
     main()
