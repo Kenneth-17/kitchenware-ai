@@ -1,0 +1,4 @@
+docker build -t rpi-nutrition .
+
+docker run --device=/dev/vchiq -v /opt/vc:/opt/vc --env-file .env -v $(pwd)/results:/tmp/nutrition_results rpi-nutrition
+
