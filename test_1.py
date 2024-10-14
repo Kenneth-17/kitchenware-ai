@@ -1,78 +1,111 @@
-from openai import OpenAI
-import requests
+import RPi.GPIO as GPIO
+from hx711 import HX711
+import time
 
-#open API cliient
-client = OpenAI(api_key='sk-Qx1xcQJlq6ZcIeJisyyzfuhSB8WFAkWt77PDjm9IbTT3BlbkFJbWQvNZHUP9VvA9Z1TAxo-R2b2gdUP1Jgwr8SKn5joA')
+# Disable GPIO warnings
+GPIO.setwarnings(False)
 
-#image url
-img_url = 'https://www.shutterstock.com/image-photo/raw-chicken-fillet-pieces-fresh-260nw-2044930682.jpg'
+# Define GPIO pins connected to HX711
+DT_PIN = 5  # GPIO5 (Physical Pin 29)
+SCK_PIN = 6  # GPIO6 (Physical Pin 31)
 
+# Function to simulate LED indicator with console output
+def led_on():
+    print("[LED ON]")  # Simulate LED ON
 
-#query to send image with prompt to get food item
-response = client.chat.completions.create(
-  model="gpt-4o-mini",
-  messages=[
-    {
-      "role": "user",
-      "content": [
-        {"type": "text", "text": "What’s in this image, just the food name?"},
-        {
-          "type": "image_url",
-          "image_url": {
-            "url": img_url,
-          },
-        },
-      ],
-    }
-  ],
-  max_tokens=300,
-)
+def led_off():
+    print("[LED OFF]")  # Simulate LED OFF
 
-#print(response.choices[0].message.content)
+# Function to "blink" using console output
+def blink_led(times, interval=0.5):
+    for _ in range(times):
+        led_on()
+        time.sleep(interval)
+        led_off()
+        time.sleep(interval)
 
-# Your Nutritionix API credentials
-API_URL = "https://trackapi.nutritionix.com/v2/natural/nutrients"
-APP_ID = "94615eef"
-API_KEY = "5e7a357053959ca39c053ba924460cc9"
+# Initialize HX711
+def initialize_hx711(dt_pin, sck_pin):
+    print("[DEBUG] Initializing HX711...")
+    hx = HX711(dt_pin, sck_pin)
+    print("[DEBUG] HX711 successfully initialized")
+    return hx
 
-# The food name (you can set this programmatically or obtain it from another part of your program)
-food_name = response.choices[0].message.content  # Replace this with the food name variable from your earlier code
+# Set the reference unit for calibration
+def setup_hx711(hx):
+    print("[DEBUG] Setting reading format...")
+    hx.set_reading_format("MSB", "MSB")  # Set the bit order
+    print("[DEBUG] Reading format set successfully")
 
-# Ask the user for the serving size in grams
-serving_grams = input("Enter the serving size in grams: ")
+    try:
+        known_weight = float(input("Enter the weight of a known mass (in grams) to calibrate: "))
+        print("Place the known weight on the scale...")
+        time.sleep(5)  # Wait for the user to place the weight
 
-# Create the query string with the serving size in grams
-query = f"{serving_grams} grams of {food_name}"
+        reading = hx.get_weight(5)  # Average over 5 readings
+        print(f"[DEBUG] Reading from load cell with known weight: {reading:.2f}")
+        if reading != 0:
+            calibration_factor = reading / known_weight
+            hx.set_reference_unit(calibration_factor)
+            print(f"[DEBUG] Calibration factor set to: {calibration_factor:.2f}")
+        else:
+            print("[ERROR] Reading is zero, check the load cell.")
+    except ValueError:
+        print("[ERROR] Invalid input. Please enter a numeric value.")
 
-# Headers required by the API
-headers = {
-    "x-app-id": APP_ID,
-    "x-app-key": API_KEY,
-    "Content-Type": "application/json"
-}
+# Reset HX711 and tare the load cell
+def reset_and_tare_hx711(hx):
+    print("[DEBUG] Resetting HX711...")
+    hx.reset()  # Reset the HX711
+    print("[DEBUG] HX711 reset successfully")
 
-# The data to send in the POST request
-data = {
-    "query": query,
-    "timezone": "US/Eastern"
-}
+    print("[DEBUG] Taring the load cell to set the zero point...")
+    blink_led(3, 0.2)  # Blink 3 times to indicate taring process
+    hx.tare()  # Tare to set the zero point
+    time.sleep(2)  # Allow some time for the tare to stabilize
+    print("[DEBUG] Load cell tared successfully")
 
-# Make the POST request
-response = requests.post(API_URL, headers=headers, json=data)
+# Measure weight
+def measure_weight(hx):
+    try:
+        weight = hx.get_weight(5)  # Average over 5 readings
+        if weight is not None:
+            print(f"[DEBUG] Raw Weight Reading: {weight:.2f} g")
+            calibrated_weight = weight  # Already calibrated
+            print(f"[DEBUG] Calibrated Weight: {calibrated_weight:.2f} g")
+        else:
+            print("[ERROR] Failed to get weight. Check wiring.")
+    except Exception as e:
+        print(f"[ERROR] Exception occurred while getting weight: {e}")
 
-# Check if the request was successful
-if response.status_code == 200:
-    # Parse the JSON response
-    result = response.json()
-    # Print the results
-    for food in result['foods']:
-        print(f"Food Name: {food['food_name']}")
-        print(f"Serving Weight: {food['serving_weight_grams']} grams")
-        print(f"Calories: {food['nf_calories']} kcal")
-        print(f"Total Fat: {food['nf_total_fat']} g")
-        print(f"Carbohydrates: {food['nf_total_carbohydrate']} g")
-        print(f"Protein: {food['nf_protein']} g")
-        print("-" * 30)
-else:
-    print(f"Error: {response.status_code}")
-    print(response.text)
+# Main execution
+if __name__ == "__main__":
+    try:
+        hx = initialize_hx711(DT_PIN, SCK_PIN)
+        setup_hx711(hx)
+        reset_and_tare_hx711(hx)
+
+        print("[DEBUG] Taring complete. Starting weight measurement...")
+        blink_led(2, 0.5)  # Blink 2 times to indicate the start of measurement
+
+        while True:
+            # Blink to show the program is running
+            led_on()
+            time.sleep(0.1)
+            led_off()
+            time.sleep(0.1)
+
+            # Read weight from the strain gauge bridge
+            print("[DEBUG] Reading weight from load cell...")
+            measure_weight(hx)
+
+            time.sleep(1)  # Delay to avoid rapid prints
+
+    except KeyboardInterrupt:
+        print("\n[DEBUG] Exiting...")
+    except Exception as e:
+        print(f"[ERROR] An unexpected error occurred: {e}")
+    finally:
+        GPIO.cleanup()  # Clean up the GPIO pins to avoid warnings
+        led_off()  # "Turn off" LED on exit
+        print("[DEBUG] Cleanup complete")
