@@ -1,0 +1,14 @@
+RPi.GPIO
+hx711py
+numpy
+requests
+matplotlib
+pillow
+statistics
+counter
+picamera2
+tk
+boto3
+openai
+
+
